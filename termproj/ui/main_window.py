@@ -20,6 +20,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.tabs = QTabWidget()
 
+        # Dashboard Tab with Add Balance Functionality
         self.dashboard_tab = QWidget()
         dash_layout = QVBoxLayout(self.dashboard_tab)
         self.welcome_label = QLabel("Welcome to DriveShare Dashboard!")
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
         search_layout.addWidget(self.rent_car_btn)
         self.tabs.addTab(self.search_tab, "Search & Rent")
 
-        # Messaging Tab with Inbox/Chat Split View
+        # UPDATED Messaging Tab with Inbox/Chat Split View
         self.msg_tab = QWidget()
         msg_layout = QHBoxLayout(self.msg_tab)
         # Left Panel: New Chat entry and Chat Partners list
@@ -96,7 +97,7 @@ class MainWindow(QMainWindow):
         chat_input_layout.addWidget(self.chat_message_input)
         chat_input_layout.addWidget(self.chat_send_btn)
         right_panel.addLayout(chat_input_layout)
-
+        
         msg_layout.addLayout(left_panel, 1)
         msg_layout.addLayout(right_panel, 2)
         self.tabs.addTab(self.msg_tab, "Messages")
@@ -167,7 +168,7 @@ class MainWindow(QMainWindow):
 
     def on_user_logged_in(self, user_id):
         session = UserSessionSingleton.get_instance()
-        self.welcome_label.setText(f"Welcome, {session.name}!")
+        self.welcome_label.setText(f"Welcome, {session.name} (User ID: {session.user_id})!")
         self.mediator.register("main_window", self)
         self.loadChatPartners()  # Refresh chat partner list
         self.car_list_tab.load_cars()
@@ -203,7 +204,11 @@ class MainWindow(QMainWindow):
         success, message = self.db_manager.rent_car(car_id, session.user_id)
         current_balance = self.db_manager.get_balance(session.user_id)
         self.balance_label.setText(f"Current Balance: ${current_balance:.2f}")
-        self.search_results_list.addItem(message)
+        if success:
+            # Show a popup with booking ID and reviewee ID information
+            QMessageBox.information(self, "Rental Successful", message)
+        else:
+            self.search_results_list.addItem(message)
 
     def handle_add_balance(self):
         session = UserSessionSingleton.get_instance()
@@ -243,21 +248,16 @@ class MainWindow(QMainWindow):
         reviewee_id_text = self.reviewee_input.text().strip()
         rating = int(self.rating_combo.currentText())
         feedback = self.feedback_text.toPlainText().strip()
-
         if not booking_id_text or not reviewee_id_text:
             QMessageBox.warning(self, "Input Error", "Please fill out both Booking ID and Reviewee User ID.")
             return
-
         try:
             booking_id = int(booking_id_text)
             reviewee_id = int(reviewee_id_text)
         except ValueError:
             QMessageBox.warning(self, "Input Error", "Booking ID and Reviewee User ID must be valid integers.")
             return
-
-        success = session.user.submit_review(
-            self.db_manager, booking_id, reviewee_id, rating, feedback
-        )
+        success = self.db_manager.insert_review(booking_id, session.user_id, reviewee_id, rating, feedback)
         if success:
             QMessageBox.information(self, "Success", "Review submitted successfully.")
             self.booking_input.clear()
@@ -321,7 +321,7 @@ class MainWindow(QMainWindow):
         for msg in messages:
             msg_dict = dict(msg)
             if msg_dict["sender_id"] == current_user_id:
-                sender = session.email
+                sender = UserSessionSingleton.get_instance().email
             else:
                 sender = partner["email"]
             self.chat_view_list.addItem(f"[{msg_dict['timestamp']}] {sender}: {msg_dict['content']}")
@@ -373,7 +373,7 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     db_manager = DBManager("driveshare.db")
-    mediator = None 
+    mediator = None  # Replace with your actual mediator if available
 
     window = MainWindow(db_manager, mediator)
     window.show()

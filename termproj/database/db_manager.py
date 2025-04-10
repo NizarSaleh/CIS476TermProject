@@ -158,6 +158,8 @@ class DBManager:
         """
         Attempts to rent a car by checking the user's balance against the car's price_per_day.
         Deducts the price from the balance if successful and creates a booking record.
+        Returns a tuple: (True, message) on success where message includes booking and reviewee info,
+        or (False, error_message) otherwise.
         """
         # Retrieve the car details
         self.cursor.execute("SELECT * FROM cars WHERE car_id=?", (car_id,))
@@ -170,7 +172,7 @@ class DBManager:
         if balance < price:
             return False, "Insufficient balance. Please add funds."
 
-        # Deduct the rental price and create a booking (for simplicity, booking is for 1 day)
+        # Deduct the rental price from the renter's balance
         self.cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (price, renter_id))
         start_date = datetime.now().strftime("%Y-%m-%d")
         end_date = start_date  # For one-day rental; customize as needed.
@@ -179,7 +181,10 @@ class DBManager:
             VALUES (?, ?, ?, ?, ?)
         """, (car["car_id"], renter_id, start_date, end_date, "Booked"))
         self.conn.commit()
-        return True, "Rental successful."
+        booking_id = self.cursor.lastrowid  # Get the auto-generated booking id.
+        reviewee_id = car["owner_id"]         # The reviewee is the car owner.
+        return True, f"Rental successful!\nBooking ID: {booking_id}\nReviewee ID: {reviewee_id}"
+
 
     # --- Methods for Rental History ---
     def get_rental_history_for_renter(self, renter_id):
