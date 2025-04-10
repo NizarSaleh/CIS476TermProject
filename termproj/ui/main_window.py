@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem, QTextEdit,
-    QToolBar, QAction, QComboBox, QMessageBox, QInputDialog
+    QToolBar, QAction, QComboBox, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from patterns.singleton import UserSessionSingleton
@@ -43,25 +43,38 @@ class MainWindow(QMainWindow):
         self.car_list_tab = CarListWindow(self.db_manager)
         self.tabs.addTab(self.car_list_tab, "Car Listings")
 
-        # Search & Rent Tab
+        # Search & Rent Tab with Additional Filters
         self.search_tab = QWidget()
         search_layout = QVBoxLayout(self.search_tab)
         self.search_label = QLabel("Search Cars by Location:")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("e.g., San Francisco")
+        # New: Input for maximum mileage
+        self.mileage_input = QLineEdit()
+        self.mileage_input.setPlaceholderText("Maximum Mileage (e.g., 50000)")
+        # New: Input for rental start date (used for search)
+        self.start_date_input = QLineEdit()
+        self.start_date_input.setPlaceholderText("Start Date (YYYY-MM-DD)")
+        # New: Input for rental end date (used for booking)
+        self.end_date_input = QLineEdit()
+        self.end_date_input.setPlaceholderText("End Date (YYYY-MM-DD)")
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self.handle_search)
         self.search_results_list = QListWidget()
         self.rent_car_btn = QPushButton("Rent Selected Car")
         self.rent_car_btn.clicked.connect(self.handle_rent_car)
+        
         search_layout.addWidget(self.search_label)
         search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.mileage_input)
+        search_layout.addWidget(self.start_date_input)
+        search_layout.addWidget(self.end_date_input)
         search_layout.addWidget(self.search_button)
         search_layout.addWidget(self.search_results_list)
         search_layout.addWidget(self.rent_car_btn)
         self.tabs.addTab(self.search_tab, "Search & Rent")
 
-        # UPDATED Messaging Tab with Inbox/Chat Split View
+        # Updated Messaging Tab with Inbox/Chat Split View (In-MainWindow)
         self.msg_tab = QWidget()
         msg_layout = QHBoxLayout(self.msg_tab)
         # Left Panel: New Chat entry and Chat Partners list
@@ -82,7 +95,7 @@ class MainWindow(QMainWindow):
         self.chat_partner_list.itemDoubleClicked.connect(self.open_chat_from_item)
         left_panel.addWidget(self.chat_partner_list)
         
-        # Right Panel: Conversation View and Message Input
+        # Right Panel: Conversation View and Input
         right_panel = QVBoxLayout()
         self.chat_header = QLabel("Select a chat partner")
         self.chat_header.setAlignment(Qt.AlignCenter)
@@ -183,7 +196,16 @@ class MainWindow(QMainWindow):
         if not location:
             self.search_results_list.addItem("Please enter a location.")
             return
-        results = self.db_manager.search_cars(location, "", "")
+        # Read additional search parameters
+        try:
+            max_mileage = int(self.mileage_input.text().strip())
+        except ValueError:
+            max_mileage = 1e9  # If not provided, set a high default value
+        # Use start_date_input for search criteria (a single day) 
+        rental_date = self.start_date_input.text().strip()
+        if not rental_date:
+            rental_date = datetime.now().strftime("%Y-%m-%d")
+        results = self.db_manager.search_cars(location, max_mileage, rental_date)
         if results:
             for car in results:
                 item_text = f"{car['model']} ({car['year']}) - ${car['price_per_day']}/day | Location: {car['location']}"
@@ -201,13 +223,18 @@ class MainWindow(QMainWindow):
         if not selected_item:
             return
         car_id = selected_item.data(Qt.UserRole)
-        success, message = self.db_manager.rent_car(car_id, session.user_id)
+        start_date = self.start_date_input.text().strip()
+        end_date = self.end_date_input.text().strip()
+        if not start_date or not end_date:
+            QMessageBox.warning(self, "Input Error", "Please enter both start and end dates for the rental period.")
+            return
+        success, message = self.db_manager.rent_car(car_id, session.user_id, start_date, end_date)
         current_balance = self.db_manager.get_balance(session.user_id)
         self.balance_label.setText(f"Current Balance: ${current_balance:.2f}")
         if success:
             QMessageBox.information(self, "Rental Successful", message)
         else:
-            self.search_results_list.addItem(message)
+            QMessageBox.warning(self, "Rental Failed", message)
 
     def handle_add_balance(self):
         session = UserSessionSingleton.get_instance()
@@ -268,7 +295,6 @@ class MainWindow(QMainWindow):
 
     # --- Methods for One-to-One Chat (Messaging Tab) ---
     def loadChatPartners(self):
-        """Load a list of distinct chat partners from previous messages."""
         self.chat_partner_list.clear()
         session = UserSessionSingleton.get_instance()
         if not session.is_logged_in():
@@ -297,12 +323,11 @@ class MainWindow(QMainWindow):
                 self.chat_partner_list.addItem(item)
 
     def open_chat_from_item(self, item):
-        """Open chat when a partner is double-clicked from the chat partner list."""
         partner = item.data(Qt.UserRole)
         self.load_chat_conversation(partner)
 
-    def load_chat_conversation(self, partner):
-        """Load messages between current user and the given partner into the conversation view."""
+        def load_chat_conversation(self, partner):
+            """Load messages between current user and the given partner into the conversation view."""
         session = UserSessionSingleton.get_instance()
         current_user_id = session.user_id
         self.chat_header.setText(f"Chat with {partner['email']}")
@@ -317,18 +342,24 @@ class MainWindow(QMainWindow):
                   partner["user_id"], current_user_id)
         self.db_manager.cursor.execute(query, params)
         messages = self.db_manager.cursor.fetchall()
+        
+        # Debug: print the number of messages loaded
+        print(f"Loaded {len(messages)} messages for conversation with {partner['email']}")
+
         for msg in messages:
             msg_dict = dict(msg)
+            # If the sender is the current user, show their email instead of "You"
             if msg_dict["sender_id"] == current_user_id:
                 sender = session.email
             else:
                 sender = partner["email"]
             self.chat_view_list.addItem(f"[{msg_dict['timestamp']}] {sender}: {msg_dict['content']}")
         self.chat_view_list.scrollToBottom()
+        # Store current conversation partner for sending messages
         self.current_chat_partner = partner
 
+
     def send_chat_message(self):
-        """Send the message typed in the chat input to the current chat partner."""
         session = UserSessionSingleton.get_instance()
         if not session.is_logged_in() or not hasattr(self, "current_chat_partner"):
             QMessageBox.warning(self, "No Chat Selected", "Please select a chat partner first.")
@@ -350,7 +381,6 @@ class MainWindow(QMainWindow):
         self.load_chat_conversation(self.current_chat_partner)
 
     def start_new_chat(self):
-        """Start a new chat using the email entered in the new partner input."""
         partner_email = self.new_partner_input.text().strip().lower()
         if not partner_email:
             QMessageBox.warning(self, "Input Error", "Please enter the partner's email.")
