@@ -4,12 +4,12 @@ from datetime import datetime
 class DBManager:
     def __init__(self, db_name='driveshare.db'):
         self.conn = sqlite3.connect(db_name)
-        self.conn.row_factory = sqlite3.Row  
+        self.conn.row_factory = sqlite3.Row  # Enable dict-like row access
         self.cursor = self.conn.cursor()
         self.setup_tables()
 
     def setup_tables(self):
-    # User table
+        # USERS TABLE: Stores registration and authentication details, the user's name, and balance.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +25,7 @@ class DBManager:
                 balance REAL NOT NULL DEFAULT 0.0
             );
         """)
-        # Cars table
+        # CARS TABLE: Stores car listing details.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS cars (
                 car_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +39,7 @@ class DBManager:
                 FOREIGN KEY (owner_id) REFERENCES users(user_id)
             );
         """)
-        # Bookings table
+        # BOOKINGS TABLE: Stores booking details for rentals.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS bookings (
                 booking_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +52,7 @@ class DBManager:
                 FOREIGN KEY (renter_id) REFERENCES users(user_id)
             );
         """)
-        # Messages table
+        # MESSAGES TABLE: For communication between users.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +64,8 @@ class DBManager:
                 FOREIGN KEY (receiver_id) REFERENCES users(user_id)
             );
         """)
-        # Reviews table
+        # REVIEWS TABLE: Stores reviews and ratings for completed rentals.
+        # The UNIQUE constraint on booking_id ensures only one review per booking.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS reviews (
                 review_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +81,8 @@ class DBManager:
             );
         """)
         self.conn.commit()
+
+    # --- Existing Methods ---
 
     def get_messages(self, receiver_id):
         """Retrieve all messages sent to the given receiver."""
@@ -133,16 +136,36 @@ class DBManager:
         """, (owner_id, model, year, mileage, location, price, availability))
         self.conn.commit()
 
-    def search_cars(self, location, start_date, end_date):
+    def search_cars(self, location, max_mileage, rental_date):
         """
-        Searches for cars by location. (Date filtering can be added as needed.)
-        Returns a list of car listings (dictionaries) that match the location.
+        Searches for cars by location, and filters by mileage and rental availability.
+        - location: string to match in the location field.
+        - max_mileage: maximum allowed mileage (as an integer).
+        - rental_date: desired rental date as a string (format "YYYY-MM-DD").
+
+        The availability column is assumed to be a string in the format "YYYY-MM-DD to YYYY-MM-DD".
+        Returns a list of car listings (as dictionaries) that match the criteria.
         """
-        self.cursor.execute("SELECT * FROM cars WHERE location LIKE ?", ('%' + location + '%',))
+        self.cursor.execute(
+            "SELECT * FROM cars WHERE location LIKE ? AND mileage <= ?",
+            ('%' + location + '%', max_mileage)
+        )
         rows = self.cursor.fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for row in rows:
+            car = dict(row)
+            avail_str = car.get("availability", "")
+            try:
+                start_avail, end_avail = avail_str.split(" to ")
+                if rental_date >= start_avail and rental_date <= end_avail:
+                    results.append(car)
+            except Exception as e:
+                # If availability cannot be parsed, include the car (or choose to exclude it)
+                results.append(car)
+        return results
 
     # --- Methods for Balance and Renting Functionality ---
+
     def add_balance(self, user_id, amount):
         """Add funds to the user's balance."""
         self.cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
@@ -154,39 +177,62 @@ class DBManager:
         row = self.cursor.fetchone()
         return row["balance"] if row else 0.0
 
-    def rent_car(self, car_id, renter_id):
+    def rent_car(self, car_id, renter_id, start_date, end_date):
         """
-        Attempts to rent a car by checking the user's balance against the car's price_per_day.
-        Deducts the price from the balance if successful and creates a booking record.
-        Returns a tuple: (True, message) on success where message includes booking and reviewee info,
-        or (False, error_message) otherwise.
+        Attempts to rent a car by reserving it for the specified period.
+        Prevents double-booking by checking for overlapping bookings.
+        Deducts the total rental cost from the user's balance and creates a booking record.
+
+        Parameters:
+            car_id (int): The car to book.
+            renter_id (int): The ID of the user renting the car.
+            start_date (str): The start date in "YYYY-MM-DD" format.
+            end_date (str): The end date in "YYYY-MM-DD" format.
+
+        Returns:
+            (bool, str): A tuple where True means success, with the message including the booking ID,
+                         reviewee ID, and total cost; False means an error with an explanation.
         """
-        # Retrieve the car details
+        # Retrieve car details
         self.cursor.execute("SELECT * FROM cars WHERE car_id=?", (car_id,))
         car = self.cursor.fetchone()
         if not car:
             return False, "Car not found."
 
-        price = car["price_per_day"]
+        # Check for overlapping bookings
+        self.cursor.execute("""
+            SELECT * FROM bookings
+            WHERE car_id = ?
+              AND status = 'Booked'
+              AND NOT (? > end_date OR ? < start_date)
+        """, (car_id, start_date, end_date))
+        conflict = self.cursor.fetchone()
+        if conflict:
+            return False, "Car is already booked for the selected period."
+
+        from datetime import datetime
+        d1 = datetime.strptime(start_date, "%Y-%m-%d")
+        d2 = datetime.strptime(end_date, "%Y-%m-%d")
+        rental_days = (d2 - d1).days + 1
+        total_price = rental_days * car["price_per_day"]
+
         balance = self.get_balance(renter_id)
-        if balance < price:
+        if balance < total_price:
             return False, "Insufficient balance. Please add funds."
 
-        # Deduct the rental price from the renter's balance
-        self.cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (price, renter_id))
-        start_date = datetime.now().strftime("%Y-%m-%d")
-        end_date = start_date  # For one-day rental; customize as needed.
+        # Deduct rental cost and create a booking
+        self.cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_price, renter_id))
         self.cursor.execute("""
             INSERT INTO bookings(car_id, renter_id, start_date, end_date, status)
             VALUES (?, ?, ?, ?, ?)
         """, (car["car_id"], renter_id, start_date, end_date, "Booked"))
         self.conn.commit()
-        booking_id = self.cursor.lastrowid  # Get the auto-generated booking id.
-        reviewee_id = car["owner_id"]         # The reviewee is the car owner.
-        return True, f"Rental successful!\nBooking ID: {booking_id}\nReviewee ID: {reviewee_id}"
-
+        booking_id = self.cursor.lastrowid
+        reviewee_id = car["owner_id"]
+        return True, f"Rental successful!\nBooking ID: {booking_id}\nReviewee ID: {reviewee_id}\nTotal Cost: ${total_price:.2f}"
 
     # --- Methods for Rental History ---
+
     def get_rental_history_for_renter(self, renter_id):
         """
         Retrieve the rental history for a renter.
@@ -211,12 +257,13 @@ class DBManager:
         return [dict(r) for r in rows]
 
     # --- Methods for Reviews ---
+
     def insert_review(self, booking_id, reviewer_id, reviewee_id, rating, feedback):
         """
         Insert a review for a completed rental.
         - booking_id: ID of the booking associated with the review.
         - reviewer_id: The user who is writing the review.
-        - reviewee_id: The user being reviewed (could be owner or renter).
+        - reviewee_id: The user being reviewed.
         - rating: An integer rating (e.g., 1 to 5).
         - feedback: Textual feedback message.
         Returns True on success, False otherwise.
@@ -250,3 +297,20 @@ class DBManager:
         self.cursor.execute("SELECT * FROM reviews WHERE booking_id=?", (booking_id,))
         row = self.cursor.fetchone()
         return dict(row) if row else None
+
+    def update_car_availability(self, car_id, availability):
+        """
+        Update the availability field for a given car.
+        :param car_id: The ID of the car to update.
+        :param availability: The new availability string (e.g., a date range).
+        """
+        self.cursor.execute("UPDATE cars SET availability = ? WHERE car_id = ?", (availability, car_id))
+        self.conn.commit()
+    def update_car_price(self, car_id, price):
+        """
+        Update the price_per_day field for a given car.
+        :param car_id: The ID of the car to update.
+        :param price: The new price per day (float).
+        """
+        self.cursor.execute("UPDATE cars SET price_per_day = ? WHERE car_id = ?", (price, car_id))
+        self.conn.commit()

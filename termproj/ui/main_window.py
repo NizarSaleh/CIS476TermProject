@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem, QTextEdit,
-    QToolBar, QAction, QComboBox, QMessageBox
+    QToolBar, QAction, QComboBox, QMessageBox, QInputDialog
 )
 from PyQt5.QtCore import Qt
 from patterns.singleton import UserSessionSingleton
@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         self.chat_partner_list.itemDoubleClicked.connect(self.open_chat_from_item)
         left_panel.addWidget(self.chat_partner_list)
         
-        # Right Panel: Conversation View and Input
+        # Right Panel: Conversation View and Message Input
         right_panel = QVBoxLayout()
         self.chat_header = QLabel("Select a chat partner")
         self.chat_header.setAlignment(Qt.AlignCenter)
@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
 
     def on_user_logged_in(self, user_id):
         session = UserSessionSingleton.get_instance()
-        self.welcome_label.setText(f"Welcome, {session.name} (User ID: {session.user_id})!")
+        self.welcome_label.setText(f"Welcome, {session.name}!")
         self.mediator.register("main_window", self)
         self.loadChatPartners()  # Refresh chat partner list
         self.car_list_tab.load_cars()
@@ -205,7 +205,6 @@ class MainWindow(QMainWindow):
         current_balance = self.db_manager.get_balance(session.user_id)
         self.balance_label.setText(f"Current Balance: ${current_balance:.2f}")
         if success:
-            # Show a popup with booking ID and reviewee ID information
             QMessageBox.information(self, "Rental Successful", message)
         else:
             self.search_results_list.addItem(message)
@@ -321,12 +320,11 @@ class MainWindow(QMainWindow):
         for msg in messages:
             msg_dict = dict(msg)
             if msg_dict["sender_id"] == current_user_id:
-                sender = UserSessionSingleton.get_instance().email
+                sender = session.email
             else:
                 sender = partner["email"]
             self.chat_view_list.addItem(f"[{msg_dict['timestamp']}] {sender}: {msg_dict['content']}")
         self.chat_view_list.scrollToBottom()
-        # Store current conversation partner for sending messages
         self.current_chat_partner = partner
 
     def send_chat_message(self):
@@ -357,12 +355,10 @@ class MainWindow(QMainWindow):
         if not partner_email:
             QMessageBox.warning(self, "Input Error", "Please enter the partner's email.")
             return
-        # Look up the partner from the DB using the email
         partner = self.db_manager.get_user_by_email(partner_email)
         if not partner:
             QMessageBox.critical(self, "Error", f"No user found with email: {partner_email}")
             return
-        # Load the conversation into the built-in chat pane
         self.load_chat_conversation(partner)
         self.new_partner_input.clear()
         self.loadChatPartners()
